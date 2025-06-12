@@ -1,0 +1,10 @@
+langgraph
+langchain
+langchain-openai
+langchain-community
+google-search-results
+langchain-core
+rdkit
+requests
+openai
+python-dotenv
