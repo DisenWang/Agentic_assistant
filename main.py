@@ -1,19 +1,13 @@
-import re
-from langgraph.graph import StateGraph
-from langchain_core.runnables import Runnable
+import os
+import asyncio
+from typing import Optional, TypedDict
+
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.graph.message import add_messages
-from typing import TypedDict, Optional
-import requests
-from rdkit import Chem
-from rdkit.Chem import Descriptors
-# LLM-based router imports
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from dotenv import load_dotenv
-import os
-from serpapi import GoogleSearch
-import json
+from langgraph.graph import StateGraph
+
 from utils import (
     get_smiles_from_pubchem,
     get_molecular_properties,
@@ -23,8 +17,9 @@ from utils import (
     query_google_patents_via_serpapi,
     format_patent_results,
     log_state,
-    AgentState
-    , trim_memory)
+    AgentState,
+    trim_memory
+)
 
 from nodes import (
     descriptor_node,
@@ -34,6 +29,8 @@ from nodes import (
     patent_node,
     web_node,
     fallback_node,
+    calc_node,
+    visualize_node
 )
 
 from router import router_node
@@ -44,7 +41,6 @@ load_dotenv()
 # Graph Wiring
 # ------------------
 
-
 graph = StateGraph(AgentState)
 graph.add_node("pubchem_node", pubchem_node)
 graph.add_node("descriptor_node", descriptor_node)
@@ -53,6 +49,8 @@ graph.add_node("smallworld_node", smallworld_node)
 graph.add_node("patent_node", patent_node)
 graph.add_node("web_node", web_node)
 graph.add_node("fallback_node", fallback_node)
+graph.add_node("calc_node", calc_node)
+graph.add_node("visualize_node", visualize_node)
 
 # Add explicit router node
 graph.add_node("router", router_node)
@@ -69,7 +67,9 @@ graph.add_conditional_edges(
         "smallworld_node": "smallworld_node",
         "patent_node": "patent_node",
         "web_node": "web_node",
-        "fallback_node": "fallback_node"
+        "fallback_node": "fallback_node",
+        "calc_node": "calc_node",
+        "visualize_node": "visualize_node",
     }
 )
 graph.set_finish_point("descriptor_node")
@@ -79,6 +79,8 @@ graph.set_finish_point("smallworld_node")
 graph.set_finish_point("patent_node")
 graph.set_finish_point("web_node")
 graph.set_finish_point("fallback_node")
+graph.set_finish_point("calc_node")
+graph.set_finish_point("visualize_node")
 
 agent = graph.compile()
 
@@ -86,20 +88,20 @@ agent = graph.compile()
 chat_history = []
 
 # Helper function to invoke the agent and manage memory
-def chat(input_text: str):
+async def chat(input_text: str):
     global chat_history
     # Extract latest metadata if available
     last_state = chat_history[-1].additional_kwargs.get("state", {}) if chat_history else {}
     state = {
         "input": input_text,
         "memory": chat_history,
-        "compound": last_state.get("compound"),
-        "smiles": last_state.get("smiles"),
-        "formula": last_state.get("formula"),
-        "descriptors": last_state.get("descriptors"),
-        "pdb_metadata": last_state.get("pdb_metadata")
+        "compound": last_state.get("compound", None),
+        "smiles": last_state.get("smiles", None),
+        "formula": last_state.get("formula", None),
+        "descriptors": last_state.get("descriptors", None),
+        "pdb_metadata": last_state.get("pdb_metadata", None)
     }
-    result = agent.invoke(state)
+    result = await agent.ainvoke(state)
     print(f"[Chat] Input: {input_text} — Result: {result}")
     # Embed latest state in the response metadata
     if hasattr(result["memory"][-1], "additional_kwargs"):
@@ -113,13 +115,14 @@ def chat(input_text: str):
     chat_history = result["memory"]
     return result["memory"][-1].content if result["memory"] else "No response generated."
 
-# Usage example
-if __name__ == "__main__":
-    print("ChemAgent is ready. Type 'exit' to quit.")
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() in {"exit", "quit"}:
-            print("Goodbye!")
-            break
-        response = chat(user_input)
-        print("Assistant:", response)
+
+# # Usage example
+# if __name__ == "__main__":
+#     print("ChemAgent is ready. Type 'exit' to quit.")
+#     while True:
+#         user_input = input("You: ")
+#         if user_input.lower() in {"exit", "quit"}:
+#             print("Goodbye!")
+#             break
+#         response = asyncio.run(chat(user_input))
+#         print("Assistant:", response)

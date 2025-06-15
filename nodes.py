@@ -1,19 +1,16 @@
-import re
-from langgraph.graph import StateGraph
-from langchain_core.runnables import Runnable
-from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.graph.message import add_messages
+import os
 from typing import TypedDict, Optional
+
 import requests
 from rdkit import Chem
-from rdkit.Chem import Descriptors
-# LLM-based router imports
+from rdkit.Chem import Draw
+
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from dotenv import load_dotenv
-import os
+import re
 from serpapi import GoogleSearch
-import json
+
 from utils import (
     get_smiles_from_pubchem,
     get_molecular_properties,
@@ -25,6 +22,7 @@ from utils import (
     log_state,
     AgentState,
     trim_memory
+    , add_messages
 )
 
 def web_node(state: AgentState) -> AgentState:
@@ -59,7 +57,8 @@ def web_node(state: AgentState) -> AgentState:
         content = f"Web search error: {str(e)}"
 
     return {**state, "memory": add_messages(messages, AIMessage(content=content))}
-def smallworld_node(state: AgentState) -> AgentState:
+
+async def smallworld_node(state: AgentState) -> AgentState:
     input_text = state["input"]
     log_state("SmallWorld Node", state)
     memory = trim_memory(state.get("memory", []))
@@ -68,9 +67,9 @@ def smallworld_node(state: AgentState) -> AgentState:
     if not smiles:
         return {**state, "memory": add_messages(messages, AIMessage(content="Please provide a compound name first before doing similarity search."))}
     try:
-        hlid = smallworld_submit_search(smiles)
+        hlid = await smallworld_submit_search(smiles)
         smiles = state.get("smiles")
-        results = smallworld_view_results(hlid, smiles)
+        results = await smallworld_view_results(hlid, smiles)
         if not isinstance(results, list):
             raise ValueError(f"Unexpected results format: {type(results)} — {results}")
         top_results = results[:5]
@@ -84,7 +83,7 @@ def smallworld_node(state: AgentState) -> AgentState:
     except Exception as e:
         return {**state, "memory": add_messages(messages, AIMessage(content=f"SmallWorld search failed: {str(e)}"))}
 
-def pubchem_node(state: AgentState) -> AgentState:
+async def pubchem_node(state: AgentState) -> AgentState:
     input_text = state["input"]
     log_state("PubChem Node", state)
     memory = trim_memory(state.get("memory", []))
@@ -93,15 +92,14 @@ def pubchem_node(state: AgentState) -> AgentState:
     if not compound:
         return {**state, "memory": add_messages(messages, AIMessage(content="Please specify the compound name."))}
     state["compound"] = compound
-    smiles = state.get("smiles")
-    formula = state.get("formula")
+    smiles, formula = await get_smiles_from_pubchem(compound)
     if smiles:
         response = f"{compound.capitalize()} → SMILES: {smiles}, Formula: {formula}"
         return {**state, "compound": compound, "smiles": smiles, "formula": formula, "memory": add_messages(messages, AIMessage(content=response))}
     else:
         return {**state, "memory": add_messages(messages, AIMessage(content=f"Sorry, I couldn't find {compound} in the PubChem database. Please check the compound name or try a related synonym."))}
 
-def descriptor_node(state: AgentState) -> AgentState:
+async def descriptor_node(state: AgentState) -> AgentState:
     input_text = state["input"]
     log_state("Descriptor Node", state)
     memory = trim_memory(state.get("memory", []))
@@ -110,7 +108,7 @@ def descriptor_node(state: AgentState) -> AgentState:
     compound = state.get("compound")
     # No fallback extraction for compound; rely on router to set it
     if not smiles and compound:
-        smiles, formula = get_smiles_from_pubchem(compound)
+        smiles, formula = await get_smiles_from_pubchem(compound)
         print(f"[Descriptor Node] Retrieved SMILES: {smiles} for compound: {compound}")
         state["smiles"] = smiles
         state["formula"] = formula
@@ -121,8 +119,25 @@ def descriptor_node(state: AgentState) -> AgentState:
         return {**state, "memory": messages}
     descriptors = get_molecular_properties(smiles)
     print(f"[Descriptor Node] Final descriptors: {descriptors}")
+    input_lower = input_text.lower()
+
+    key_map = {
+        "molecular weight": "MolecularWeight",
+        "logp": "LogP",
+        "tpsa": "TPSA",
+        "polar surface area": "TPSA",
+    }
+
+    selected = {
+        v: descriptors[v]
+        for k, v in key_map.items()
+        if k in input_lower and v in descriptors
+    }
+
+    response = selected if selected else descriptors
+
     print(f"[Descriptor Node] Memory before return: {messages}")
-    messages.append(AIMessage(content=str(descriptors)))
+    messages.append(AIMessage(content=str(response)))
     return {**state, "descriptors": descriptors, "memory": messages}
 
 def pdb_node(state: AgentState) -> AgentState:
@@ -161,3 +176,36 @@ def fallback_node(state: AgentState) -> AgentState:
     log_state("Fallback Node", state)
     messages = add_messages(memory, HumanMessage(content=input_text))
     return {**state, "memory": add_messages(messages, AIMessage(content="Sorry, I didn't understand your question. Try asking about SMILES, molecular weight, LogP, or protein structures."))}
+
+def calc_node(state: AgentState) -> AgentState:
+    input_text = state["input"]
+    log_state("Calc Node", state)
+    memory = trim_memory(state.get("memory", []))
+    messages = add_messages(memory, HumanMessage(content=input_text))
+    # Placeholder logic for calculation
+    result = "This is a placeholder for chemistry calculation results."
+    messages = add_messages(messages, AIMessage(content=result))
+    return {**state, "memory": messages}
+
+def visualize_node(state: AgentState) -> AgentState:
+    input_text = state["input"]
+    log_state("Visualize Node", state)
+    memory = trim_memory(state.get("memory", []))
+    messages = add_messages(memory, HumanMessage(content=input_text))
+
+    smiles = state.get("smiles")
+    if not smiles:
+        messages = add_messages(messages, AIMessage(content="SMILES not found in state. Cannot generate visualization."))
+        return {**state, "memory": messages}
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol:
+        img = Draw.MolToImage(mol, size=(300, 300))
+        output_path = os.path.join(os.getcwd(), "output.png")
+        img.save(output_path)
+        result = "Molecule image saved to output.png"
+    else:
+        result = "Failed to generate molecule from SMILES."
+
+    messages = add_messages(messages, AIMessage(content=result))
+    return {**state, "memory": messages, "intent": "visualize"}
