@@ -8,3 +8,6 @@ rdkit
 requests
 openai
 python-dotenv
+streamlit
+aiohttp
+pillow
