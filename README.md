@@ -103,26 +103,3 @@ Then open your browser to `http://localhost:8501`
 | SmallWorld  | Similar molecule search                 | Fallback + retry       |
 | SerpAPI/USPTO | Patent lookup                         | API key + structured response parsing |
 
-
----
-
-## Known Limitations
-
-- LLM may sometimes misclassify intent or produce ambiguous fallback answers
-- Similarity scores from SmallWorld are approximate; Tanimoto calculation is optionally supported
-- Web search and patent features depend on third-party API quotas
-
----
-
-## Future Improvements
-
-- Add visualization of 3D protein structures
-- Improve intent classification via fine-tuning
-- Implement async for faster batch API calls
-- Expand web scraping and summarization logic
-
----
-
-## License
-
-This project is intended for evaluation purposes only.
