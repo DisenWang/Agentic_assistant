@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project was developed as part of the Agentic AI Scientist Take-Home Challenge.
+This project was developed for the Agentic AI Scientist Take-Home Challenge.
 
 ---
 
